@@ -1,0 +1,1 @@
+comando para gerar build `pyinstaller --noconfirm --clean .\installer.spec`
