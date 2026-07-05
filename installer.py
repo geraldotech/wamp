@@ -42,11 +42,11 @@ if os.name == "nt":
     }
 
 INSTALL_COMPONENT_DEFINITIONS = [
+    ("vcredist", "Microsoft Visual C++ 2015-2022 Redistributable (x64) 14.44.35211"),
     ("apache", "Apache 2.4.68"),
     ("mysql", "MySQL server  8.4.10"),
     ("agendador", "Agendador"),
     ("workbench", "MySQL Workbench 8.0.43"),
-    ("vcredist", "Microsoft Visual C++ 2015-2022 Redistributable (x64) 14.44.35211"),
 ]
 
 class InstallError(RuntimeError):
@@ -508,7 +508,6 @@ def install_apache(logger: Logger, service_name: str = APACHE_SERVICE_NAME) -> N
 
     run_command(logger, ["net", "stop", service_name], check=False)
     run_command(logger, ["net", "start", service_name])
-    fix_php_dir(logger)
 
 
 def install_mysql(logger: Logger) -> None:
@@ -735,29 +734,75 @@ def step_actions() -> dict[str, tuple[str, callable]]:
     }
 
 
+def prepare_install_steps(selected_steps: list[str]) -> tuple[list[str], list[str]]:
+    ordered_steps = list(dict.fromkeys(selected_steps))
+    if "apache" in ordered_steps and "vcredist" not in ordered_steps and not vcredist_installed():
+        apache_index = ordered_steps.index("apache")
+        ordered_steps.insert(apache_index, "vcredist")
+
+    final_steps: list[str] = []
+    if "mysql" in ordered_steps:
+        final_steps.append("fix-mysql-dir")
+    if "apache" in ordered_steps:
+        final_steps.append("fix-php-dir")
+
+    return ordered_steps, final_steps
+
+
 def run_selected_install_steps(logger: Logger, selected_steps: list[str], progress_callback=None) -> int:
     actions = step_actions()
     if not selected_steps:
         raise InstallError("No installation step was selected.")
 
+    execution_steps, final_steps = prepare_install_steps(selected_steps)
     logger.write(f"Selected steps: {', '.join(selected_steps)}")
-    total_steps = len(selected_steps)
+    if execution_steps != selected_steps:
+        logger.write(f"Adjusted execution order: {', '.join(execution_steps)}")
+    if final_steps:
+        logger.write(f"Final fix steps: {', '.join(final_steps)}")
+
+    total_steps = len(execution_steps) + len(final_steps)
     if progress_callback:
         progress_callback(0, f"0% - 0/{total_steps} etapas concluidas")
 
-    for index, step_key in enumerate(selected_steps, start=1):
+    completed_steps = 0
+
+    for step_key in execution_steps:
         if step_key not in actions:
             raise InstallError(f"Unknown installation step: {step_key}")
         step_name, action = actions[step_key]
         if progress_callback:
-            started_progress = int(((index - 1) / total_steps) * 100)
+            started_progress = int((completed_steps / total_steps) * 100)
             progress_callback(started_progress, f"{started_progress}% - instalando: {step_name}")
         run_step(logger, step_name, lambda action=action: action(logger))
+        completed_steps += 1
         if progress_callback:
-            completed_progress = int((index / total_steps) * 100)
+            completed_progress = int((completed_steps / total_steps) * 100)
             progress_callback(
                 completed_progress,
-                f"{completed_progress}% - {index}/{total_steps} etapas concluidas",
+                f"{completed_progress}% - {completed_steps}/{total_steps} etapas concluidas",
+            )
+
+    for step_key in final_steps:
+        if step_key == "fix-mysql-dir":
+            step_name = "Corrigir MySQL path"
+            action = fix_mysql_dir
+        elif step_key == "fix-php-dir":
+            step_name = "Corrigir PHP path"
+            action = fix_php_dir
+        else:
+            raise InstallError(f"Unknown final installation step: {step_key}")
+
+        if progress_callback:
+            started_progress = int((completed_steps / total_steps) * 100)
+            progress_callback(started_progress, f"{started_progress}% - finalizando: {step_name}")
+        run_step(logger, step_name, lambda action=action: action(logger))
+        completed_steps += 1
+        if progress_callback:
+            completed_progress = int((completed_steps / total_steps) * 100)
+            progress_callback(
+                completed_progress,
+                f"{completed_progress}% - {completed_steps}/{total_steps} etapas concluidas",
             )
 
     logger.write("")
